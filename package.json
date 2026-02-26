@@ -1,0 +1,35 @@
+{
+  "name": "game2",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "prepare": "svelte-kit sync || true",
+    "deploy": "npm run build && wrangler deploy",
+    "cf:dev": "wrangler dev",
+    "cf:deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260305.0",
+    "@skeletonlabs/skeleton": "^4.12.0",
+    "@skeletonlabs/skeleton-svelte": "^4.12.0",
+    "@sveltejs/adapter-cloudflare": "^5.0.0",
+    "@sveltejs/kit": "^2.50.2",
+    "@sveltejs/vite-plugin-svelte": "^6.2.4",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/randomcolor": "^0.5.9",
+    "svelte": "^5.51.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "animejs": "^4.3.6",
+    "honeycomb-grid": "^4.1.5",
+    "randomcolor": "^0.6.2"
+  }
+}
