@@ -1,9 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 import { DurableObject } from 'cloudflare:workers';
-import type { DurableObjectState } from '@cloudflare/workers-types';
 import randomColor from 'randomcolor';
-import type { Env } from './types';
-import type { GameConfig, GameState, Player, Cell, PendingActions } from './types';
+import type { Env, GameConfig, GameState, Player, Cell, PendingActions, GamePhase } from './types';
 import { generateGrid } from './grid';
 import { axialEquals, axialKey } from './hex';
 
@@ -71,7 +69,7 @@ function ensurePlayerColors(players: Player[]): Player[] {
 }
 
 export class GameRoom extends DurableObject<Env> {
-  constructor(ctx: DurableObjectState, env: Env) {
+  constructor(ctx: any, env: Env) {
     super(ctx, env);
   }
 
@@ -87,13 +85,14 @@ export class GameRoom extends DurableObject<Env> {
     await this.ctx.storage.put('grid', []);
   }
 
-  async getRoomMeta(): Promise<{ roundCount: number; playerCount: number; playerNames: string[] }> {
+  async getRoomMeta(): Promise<{ roundCount: number; playerCount: number; playerNames: string[]; phase: GamePhase }> {
     const config = await this.ctx.storage.get<GameConfig>('config');
     const players = await this.ctx.storage.get<Player[]>('players') ?? [];
     return {
       roundCount: config?.roundCount ?? 0,
       playerCount: players.length,
       playerNames: players.map((p) => p.displayName),
+      phase: config?.phase ?? 'lobby',
     };
   }
 
@@ -150,6 +149,8 @@ export class GameRoom extends DurableObject<Env> {
         await this.handleBuyCell(ws, data as { type: 'buy_cell'; cellId: string; role: 'producer' | 'seller' });
       } else if (data.type === 'buy_cell_cancel') {
         await this.handleBuyCellCancel(ws, data as { type: 'buy_cell_cancel'; cellId: string });
+      } else if (data.type === 'sell_cell') {
+        await this.handleSellCell(ws, data as { type: 'sell_cell'; cellId: string });
       } else if (data.type === 'buy_done') {
         await this.handleBuyDone(ws);
       } else if (data.type === 'auction_bid') {
@@ -182,7 +183,11 @@ export class GameRoom extends DurableObject<Env> {
 
   private async handleJoin(ws: WebSocket, data: { type: 'join'; playerName?: string }): Promise<void> {
     const config = await this.ctx.storage.get<GameConfig>('config');
-    if (config?.phase !== 'lobby') return;
+    if (config?.phase !== 'lobby') {
+      await this.sendTo(ws, { type: 'error', message: 'Game already in progress; you cannot join this room.' });
+      await this.broadcastState();
+      return;
+    }
     const players = ensurePlayerColors(await this.ctx.storage.get<Player[]>('players') ?? []);
     const playerId = crypto.randomUUID().slice(0, 8);
     const displayName = data.playerName ?? `Player ${players.length + 1}`;
@@ -235,7 +240,7 @@ export class GameRoom extends DurableObject<Env> {
     await this.ctx.storage.put('grid', grid);
     await this.ctx.storage.put('pendingActions', emptyPendingActions());
     await this.ctx.storage.put('submittedPaths', {});
-    await this.ctx.setAlarm(Date.now() + 2000);
+    await this.ctx.storage.setAlarm(Date.now() + 2000);
     await this.broadcastState();
   }
 
@@ -263,7 +268,7 @@ export class GameRoom extends DurableObject<Env> {
         phaseEndsAt: Date.now() + MARKET_DURATION_MS,
       };
       await this.ctx.storage.put('config', newConfig);
-      await this.ctx.setAlarm(Date.now() + MARKET_DURATION_MS);
+      await this.ctx.storage.setAlarm(Date.now() + MARKET_DURATION_MS);
       await this.broadcastState();
       return;
     }
@@ -304,7 +309,7 @@ export class GameRoom extends DurableObject<Env> {
         await this.ctx.storage.put('pendingActions', { ...pending, conflicts, auctionBids: {} });
         const newConfig: GameConfig = { ...config, phase: 'auction', marketDice, phaseEndsAt: Date.now() + AUCTION_DURATION_MS };
         await this.ctx.storage.put('config', newConfig);
-        await this.ctx.setAlarm(Date.now() + AUCTION_DURATION_MS);
+        await this.ctx.storage.setAlarm(Date.now() + AUCTION_DURATION_MS);
         await this.broadcastState();
         return;
       }
@@ -312,7 +317,7 @@ export class GameRoom extends DurableObject<Env> {
       const newConfig: GameConfig = { ...config, phase: 'buy_phase', marketDice: newMarketDice, phaseEndsAt: Date.now() + BUY_DURATION_MS };
       await this.ctx.storage.put('config', newConfig);
       await this.ctx.storage.put('pendingActions', emptyPendingActions());
-      await this.ctx.setAlarm(Date.now() + BUY_DURATION_MS);
+      await this.ctx.storage.setAlarm(Date.now() + BUY_DURATION_MS);
       await this.broadcastState();
       return;
     }
@@ -377,7 +382,7 @@ export class GameRoom extends DurableObject<Env> {
         await this.ctx.storage.put('config', newConfig);
         await this.ctx.storage.put('players', players);
         await this.ctx.storage.put('grid', grid);
-        await this.ctx.setAlarm(Date.now() + AUCTION_DURATION_MS);
+        await this.ctx.storage.setAlarm(Date.now() + AUCTION_DURATION_MS);
         await this.broadcastState();
         return;
       }
@@ -390,7 +395,7 @@ export class GameRoom extends DurableObject<Env> {
       if (players.length > 0 && Object.keys(autoPathReady).length >= players.length) {
         await this.alarm();
       } else {
-        await this.ctx.setAlarm(Date.now() + PATH_DURATION_MS);
+        await this.ctx.storage.setAlarm(Date.now() + PATH_DURATION_MS);
       }
       await this.broadcastState();
       return;
@@ -442,7 +447,7 @@ export class GameRoom extends DurableObject<Env> {
       if (players.length > 0 && Object.keys(autoPathReady).length >= players.length) {
         await this.alarm();
       } else {
-        await this.ctx.setAlarm(Date.now() + PATH_DURATION_MS);
+        await this.ctx.storage.setAlarm(Date.now() + PATH_DURATION_MS);
       }
       await this.broadcastState();
       return;
@@ -455,7 +460,7 @@ export class GameRoom extends DurableObject<Env> {
       await this.ctx.storage.put('players', players);
       const newConfig: GameConfig = { ...config, phase: 'round_end', phaseEndsAt: Date.now() + 5000 };
       await this.ctx.storage.put('config', newConfig);
-      await this.ctx.setAlarm(Date.now() + 5000);
+      await this.ctx.storage.setAlarm(Date.now() + 5000);
       await this.broadcastState();
       return;
     }
@@ -474,7 +479,7 @@ export class GameRoom extends DurableObject<Env> {
         await this.ctx.storage.put('config', newConfig);
         await this.ctx.storage.put('winnerId', best.playerId);
         await this.broadcastState();
-        await this.ctx.setAlarm(endAt);
+        await this.ctx.storage.setAlarm(endAt);
         return;
       }
       await this.ctx.storage.put('pathUsed', {});
@@ -486,7 +491,7 @@ export class GameRoom extends DurableObject<Env> {
         phaseEndsAt: Date.now() + 2000,
       };
       await this.ctx.storage.put('config', newConfig);
-      await this.ctx.setAlarm(Date.now() + 2000);
+      await this.ctx.storage.setAlarm(Date.now() + 2000);
       await this.broadcastState();
       return;
     }
@@ -517,9 +522,8 @@ export class GameRoom extends DurableObject<Env> {
       await this.ctx.storage.delete('winnerId');
       await this.ctx.storage.delete('pathUsed');
       if (roomId) {
-        const lobby = this.env.LOBBY.get(this.env.LOBBY.idFromName('default'));
-        // @ts-ignore custom method on Lobby Durable Object
-        await lobby.deleteRoom(roomId);
+      const lobby = this.env.LOBBY.get(this.env.LOBBY.idFromName('default')) as any;
+      await lobby.deleteRoom(roomId);
       }
       for (const ws of this.ctx.getWebSockets()) {
         try {
@@ -677,6 +681,34 @@ export class GameRoom extends DurableObject<Env> {
     await this.broadcastState();
   }
 
+  private async handleSellCell(ws: WebSocket, data: { type: 'sell_cell'; cellId: string }): Promise<void> {
+    const attachment = ws.deserializeAttachment?.() as { playerId: string | null } | undefined;
+    const playerId = attachment?.playerId;
+    if (!playerId) {
+      await this.sendTo(ws, { type: 'error', message: 'Not joined to this room.' });
+      await this.broadcastState();
+      return;
+    }
+    const config = await this.ctx.storage.get<GameConfig>('config');
+    if (config?.phase !== 'buy_phase') {
+      await this.broadcastState();
+      return;
+    }
+    const grid = await this.ctx.storage.get<Cell[]>('grid') ?? [];
+    const players = await this.ctx.storage.get<Player[]>('players') ?? [];
+    const cell = grid.find((c) => c.id === data.cellId);
+    const player = players.find((p) => p.playerId === playerId);
+    if (!cell || cell.blocked || !player || !cell.owners?.some((o) => o.playerId === playerId)) {
+      await this.sendTo(ws, { type: 'error', message: 'You can only sell cells you own during the buy phase.' });
+      return;
+    }
+    cell.owners = (cell.owners ?? []).filter((o) => o.playerId !== playerId);
+    player.money += 1;
+    await this.ctx.storage.put('players', players);
+    await this.ctx.storage.put('grid', grid);
+    await this.broadcastState();
+  }
+
   private async handleBuyDone(ws: WebSocket): Promise<void> {
     const attachment = ws.deserializeAttachment?.() as { playerId: string | null } | undefined;
     const playerId = attachment?.playerId;
@@ -815,13 +847,17 @@ export class GameRoom extends DurableObject<Env> {
 
   async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {
     await this.broadcastState();
+    // If there are no more connected clients, clean up this room (and remove it from the lobby)
+    if (this.ctx.getWebSockets().length === 0) {
+      await this.cleanupRoom();
+    }
   }
 
   private async syncLobbyMeta(players: Player[]): Promise<void> {
     const roomId = await this.ctx.storage.get<string>('roomId');
     if (!roomId) return;
     try {
-      const lobby = this.env.LOBBY.get(this.env.LOBBY.idFromName('default'));
+      const lobby = this.env.LOBBY.get(this.env.LOBBY.idFromName('default')) as any;
       await lobby.setRoomPlayerCount(roomId, players.length, players.map((p) => p.displayName));
     } catch {
       // best effort only

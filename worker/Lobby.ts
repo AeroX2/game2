@@ -1,16 +1,15 @@
 /// <reference types="@cloudflare/workers-types" />
 import { DurableObject } from 'cloudflare:workers';
-import type { DurableObjectState } from '@cloudflare/workers-types';
 import type { Env } from './types';
 
 export class Lobby extends DurableObject<Env> {
-  constructor(ctx: DurableObjectState, env: Env) {
+  constructor(ctx: any, env: Env) {
     super(ctx, env);
   }
 
   async createRoom(roundCount: number): Promise<{ roomId: string }> {
     const roomId = crypto.randomUUID().slice(0, 8);
-    const room = this.env.GAME_ROOM.get(this.env.GAME_ROOM.idFromName(roomId));
+    const room = this.env.GAME_ROOM.get(this.env.GAME_ROOM.idFromName(roomId)) as any;
     await room.initialize(roundCount);
     await this.ctx.storage.put(`room:${roomId}`, { roomId, roundCount, playerCount: 0, playerNames: [] as string[] });
     const rooms = (await this.ctx.storage.get<string[]>('rooms')) ?? [];
@@ -23,7 +22,7 @@ export class Lobby extends DurableObject<Env> {
     const roomIds = (await this.ctx.storage.get<string[]>('rooms')) ?? [];
     const rooms = await Promise.all(
       roomIds.map(async (roomId) => {
-        const room = this.env.GAME_ROOM.get(this.env.GAME_ROOM.idFromName(roomId));
+        const room = this.env.GAME_ROOM.get(this.env.GAME_ROOM.idFromName(roomId)) as any;
         let live: { roundCount: number; playerCount: number; playerNames: string[] } | null = null;
         try {
           live = await room.getRoomMeta();
@@ -52,6 +51,17 @@ export class Lobby extends DurableObject<Env> {
   async joinRoom(roomId: string, _playerName?: string): Promise<{ ok: true; wsUrl: string } | { error: string }> {
     const meta = await this.ctx.storage.get<{ roundCount: number }>(`room:${roomId}`);
     if (!meta) return { error: 'Room not found' };
+
+    // Disallow joining games that have already started
+    try {
+      const room = this.env.GAME_ROOM.get(this.env.GAME_ROOM.idFromName(roomId)) as any;
+      const live = await room.getRoomMeta();
+      if (live.phase !== 'lobby') {
+        return { error: 'Game already in progress' };
+      }
+    } catch {
+      // If we can't reach the room object, fall back to storage-only checks
+    }
     const playerName = (_playerName ?? '').trim();
     if (playerName) {
       const current = (await this.ctx.storage.get<{ roomId: string; roundCount: number; playerCount?: number; playerNames?: string[] }>(`room:${roomId}`)) ?? {

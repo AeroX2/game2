@@ -9,7 +9,7 @@
 
   const roomId = $derived(page.params.roomId);
 
-  let state = $state<GameState | null>(null);
+  let gameState = $state<GameState | null>(null);
   let ws = $state<WebSocket | null>(null);
   let myPlayerId = $state<string | null>(null);
   let error = $state('');
@@ -24,21 +24,21 @@
   let rulesDragging = false;
   let rulesDragOffsetX = 0;
   let rulesDragOffsetY = 0;
-  const myPlayer = $derived((state?.players ?? []).find((p) => p.playerId === myPlayerId) ?? null);
-  const myPendingBuys = $derived((myPlayerId ? (state?.pendingBuys?.[myPlayerId] ?? []) : []));
+  const myPlayer = $derived((gameState?.players ?? []).find((p) => p.playerId === myPlayerId) ?? null);
+  const myPendingBuys = $derived((myPlayerId ? (gameState?.pendingBuys?.[myPlayerId] ?? []) : []));
   const wsOpen = $derived(!!ws && ws.readyState === WebSocket.OPEN);
   const playerColors = $derived(
-    Object.fromEntries((state?.players ?? []).map((p) => [p.playerId, p.color]))
+    Object.fromEntries((gameState?.players ?? []).map((p) => [p.playerId, p.color]))
   );
-  const phaseEndsIn = $derived(state?.config.phaseEndsAt ? Math.max(0, Math.ceil((state.config.phaseEndsAt - now) / 1000)) : null);
+  const phaseEndsIn = $derived(gameState?.config.phaseEndsAt ? Math.max(0, Math.ceil((gameState.config.phaseEndsAt - now) / 1000)) : null);
   $effect(() => {
     if (phaseEndsIn === null) return;
     const t = setInterval(() => { now = Date.now(); }, 1000);
     return () => clearInterval(t);
   });
   $effect(() => {
-    if (!state?.config?.phase || phaseEndsIn === null) return;
-    const phaseKey = `${state.config.phase}:${state.config.roundIndex}:${state.config.phaseEndsAt ?? 0}`;
+    if (!gameState?.config?.phase || phaseEndsIn === null) return;
+    const phaseKey = `${gameState.config.phase}:${gameState.config.roundIndex}:${gameState.config.phaseEndsAt ?? 0}`;
     if (phaseEndsIn <= 0 && timeoutPokePhaseKey !== phaseKey) {
       timeoutPokePhaseKey = phaseKey;
       send({ type: 'tick' });
@@ -50,6 +50,20 @@
       send({ type: 'tick' });
     }, 2000);
     return () => clearInterval(interval);
+  });
+
+  // When a game reaches the ended phase, briefly show the winner then
+  // automatically return everyone to the lobby so a new game can be started.
+  $effect(() => {
+    const phase = gameState?.config?.phase;
+    if (phase !== 'ended') return;
+    const timer = setTimeout(() => {
+      try {
+        ws?.close();
+      } catch {}
+      goToLobby();
+    }, 5000);
+    return () => clearTimeout(timer);
   });
 
   function wsBaseOrigin(): string {
@@ -79,7 +93,7 @@
           myPlayerId = msg.playerId;
           sessionStorage.setItem(`game2:${currentRoomId}:playerId`, msg.playerId);
         } else if (msg.type === 'state' && msg.state) {
-          state = msg.state;
+          gameState = msg.state;
         } else if (msg.type === 'error') {
           error = msg.message ?? 'Error';
         }
@@ -193,37 +207,38 @@
     <p class="text-red-400">{error}</p>
   {/if}
 
-  {#if state}
-    {#if state.config?.phase === 'lobby'}
+  {#if gameState}
+    {#if gameState.config?.phase === 'lobby'}
       <div class="rounded-lg border border-surface-500 bg-surface-900 p-4">
-        <p class="mb-2">Players: {(state.players ?? []).length}. Need at least 2 to start.</p>
-        {#if (state.players ?? []).length > 0}
+        <p class="mb-2">Players: {(gameState.players ?? []).length}. Need at least 2 to start.</p>
+        {#if (gameState.players ?? []).length > 0}
           <div class="mb-3 space-y-1">
-            {#each (state.players ?? []) as p (p.playerId)}
+            {#each (gameState.players ?? []) as p (p.playerId)}
               <div class="text-sm text-surface-200">{p.displayName}</div>
             {/each}
           </div>
         {/if}
-        <button onclick={startGame} disabled={(state.players ?? []).length < 2} class="btn preset-filled-primary-500">
+        <button onclick={startGame} disabled={(gameState.players ?? []).length < 2} class="btn preset-filled-primary-500">
           Start game
         </button>
       </div>
-    {:else if state.config}
+    {:else if gameState.config}
       {#if phaseEndsIn !== null}
         <p class="text-sm text-surface-400">Phase ends in {phaseEndsIn}s</p>
       {/if}
       <div class="flex gap-4 flex-wrap">
         <div class="flex-1 min-w-[300px]">
           <HexGrid
-            grid={state.grid ?? []}
-            phase={state.config.phase}
+            grid={gameState.grid ?? []}
+            phase={gameState.config.phase}
             myPlayerId={myPlayerId}
             myDice={myPlayer?.dice ?? []}
             playerColors={playerColors}
             myPendingBuys={myPendingBuys}
-            mySubmittedPath={state.mySubmittedPath}
+            mySubmittedPath={gameState.mySubmittedPath}
             onBuyCell={(cellId, role) => sendPlayerAction({ type: 'buy_cell', cellId, role })}
             onCancelBuy={(cellId) => sendPlayerAction({ type: 'buy_cell_cancel', cellId })}
+            onSellCell={(cellId) => sendPlayerAction({ type: 'sell_cell', cellId })}
             onBuyDone={() => sendPlayerAction({ type: 'buy_done' })}
             onPath={(producerId, sellerId, path) => sendPlayerAction({ type: 'path', producerId, sellerId, path })}
             onPathDone={() => sendPlayerAction({ type: 'path_done' })}
@@ -231,19 +246,19 @@
         </div>
         <div class="w-80 space-y-4">
           <PlayerPanel
-            players={state.players ?? []}
+            players={gameState.players ?? []}
             myPlayerId={myPlayerId}
-            phase={state.config.phase}
-            selectionStatus={state.selectionStatus ?? {}}
+            phase={gameState.config.phase}
+            selectionStatus={gameState.selectionStatus ?? {}}
           />
           <MarketPanel
-            marketDice={state.config.marketDice ?? []}
-            minPrice={state.config.marketMinPrice ?? 1}
-            phase={state.config.phase}
+            marketDice={gameState.config.marketDice ?? []}
+            minPrice={gameState.config.marketMinPrice ?? 1}
+            phase={gameState.config.phase}
             myDice={myPlayer?.dice ?? []}
-            activeConflicts={state.activeConflicts ?? []}
-            myMarketBid={state.myMarketBid}
-            myAuctionBids={state.myAuctionBids ?? {}}
+            activeConflicts={gameState.activeConflicts ?? []}
+            myMarketBid={gameState.myMarketBid}
+            myAuctionBids={gameState.myAuctionBids ?? {}}
             canSend={!!myPlayerId && wsOpen}
             onBid={(dieIndex, amount) => sendPlayerAction({ type: 'market_bid', dieIndex, amount })}
             onSkip={() => sendPlayerAction({ type: 'market_skip' })}
@@ -252,9 +267,9 @@
           />
         </div>
       </div>
-      {#if state.config?.phase === 'ended' && state.winnerId}
+      {#if gameState.config?.phase === 'ended' && gameState.winnerId}
         <p class="text-lg font-semibold">
-          Winner: {(state.players ?? []).find((p) => p.playerId === state!.winnerId)?.displayName ?? state.winnerId}
+          Winner: {(gameState.players ?? []).find((p) => p.playerId === gameState!.winnerId)?.displayName ?? gameState.winnerId}
         </p>
       {/if}
   {/if}
@@ -289,7 +304,7 @@
         <div class="p-4 space-y-2 text-sm text-surface-200 max-h-[65vh] overflow-auto">
           <p><strong>Goal:</strong> End with the most money after all rounds.</p>
           <p><strong>Income:</strong> Each round, every player gains +1 money.</p>
-          <p><strong>Cells:</strong> Buy with a matching die value. Choose producer or seller role.</p>
+          <p><strong>Cells:</strong> Buy with a matching die value. Choose producer or seller role. During the buy phase you may sell any cell you own for +1 money.</p>
           <p><strong>Grid:</strong> Blocked cells are unusable. Unowned cells are neutral.</p>
           <p><strong>Market:</strong> Bid on available dice (min price shown), or skip.</p>
           <p><strong>Auction:</strong> Conflicts are resolved with blind bids. Tied highest bids share cell ownership.</p>

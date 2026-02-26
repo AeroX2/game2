@@ -15,11 +15,12 @@
     mySubmittedPath?: { producerId: string; sellerId: string; path: { q: number; r: number }[]; revenue?: number };
     onBuyCell: (cellId: string, role: 'producer' | 'seller') => void;
     onCancelBuy: (cellId: string) => void;
+    onSellCell: (cellId: string) => void;
     onBuyDone: () => void;
     onPath: (producerId: string, sellerId: string, path: { q: number; r: number }[]) => void;
     onPathDone: () => void;
   }
-  let { grid, phase, myPlayerId, myDice, playerColors, myPendingBuys, mySubmittedPath, onBuyCell, onCancelBuy, onBuyDone, onPath, onPathDone }: Props = $props();
+  let { grid, phase, myPlayerId, myDice, playerColors, myPendingBuys, mySubmittedPath, onBuyCell, onCancelBuy, onSellCell, onBuyDone, onPath, onPathDone }: Props = $props();
 
   const HEX_RADIUS = 24;
   const Hex = defineHex({ dimensions: HEX_RADIUS, orientation: Orientation.FLAT });
@@ -99,6 +100,13 @@
       return;
     }
     if (canBuy && !cell.blocked) {
+      if (cell.owners?.some((o) => o.playerId === myPlayerId)) {
+        selectedCellId = cell.id;
+        pathStart = null;
+        pathEnd = null;
+        clickHint = 'Selected owned cell. You can sell it for +1 money.';
+        return;
+      }
       if (pendingBuyByCell.has(cell.id)) {
         clickHint = `Already queued as ${pendingBuyByCell.get(cell.id)}. Cancel it below to change.`;
         return;
@@ -134,6 +142,14 @@
     }
   }
 
+  function confirmSell() {
+    if (selectedCellId) {
+      onSellCell(selectedCellId);
+      clickHint = 'Sold cell for +1 money.';
+      selectedCellId = null;
+    }
+  }
+
   const safeGrid = $derived(
     (Array.isArray(grid) ? grid : [])
       .filter((c): c is Cell => c != null && typeof c.id === 'string')
@@ -149,6 +165,10 @@
   const cellByAxialKey = $derived.by(() => new Map(safeGrid.map((c) => [`${c.q},${c.r}`, c])));
   const honeycombGrid = $derived.by(
     () => new Grid(Hex, fromCoordinates(...safeGrid.map((c) => [c.q, c.r] as [number, number])))
+  );
+  const selectedCell = $derived.by(() => (selectedCellId ? cellById.get(selectedCellId) ?? null : null));
+  const selectedCellOwnedByMe = $derived.by(
+    () => !!selectedCell?.owners?.some((o) => o.playerId === myPlayerId)
   );
 
   const viewBoxData = $derived.by(() => {
@@ -459,12 +479,20 @@
     {/if}
   </svg>
   {#if canBuy && selectedCellId}
-    <p class="text-sm text-surface-400 mt-2">
-      Selected cell. Buy as:
-      <button onclick={() => confirmBuy('producer')} class="btn preset-tonal-primary btn-sm mx-1">Producer</button>
-      <button onclick={() => confirmBuy('seller')} class="btn preset-tonal-primary btn-sm mx-1">Seller</button>
-      <button onclick={() => selectedCellId = null} class="btn preset-tonal-error btn-sm mx-1">Cancel</button>
-    </p>
+    {#if selectedCellOwnedByMe}
+      <p class="text-sm text-surface-400 mt-2">
+        Selected owned cell.
+        <button onclick={confirmSell} class="btn preset-tonal-primary btn-sm mx-1">Sell for +1 money</button>
+        <button onclick={() => selectedCellId = null} class="btn preset-tonal-error btn-sm mx-1">Cancel</button>
+      </p>
+    {:else}
+      <p class="text-sm text-surface-400 mt-2">
+        Selected cell. Buy as:
+        <button onclick={() => confirmBuy('producer')} class="btn preset-tonal-primary btn-sm mx-1">Producer</button>
+        <button onclick={() => confirmBuy('seller')} class="btn preset-tonal-primary btn-sm mx-1">Seller</button>
+        <button onclick={() => selectedCellId = null} class="btn preset-tonal-error btn-sm mx-1">Cancel</button>
+      </p>
+    {/if}
   {/if}
   {#if canBuy}
     <div class="mt-2 rounded border border-surface-600 bg-surface-900/60 p-2 space-y-2 text-sm">

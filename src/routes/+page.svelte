@@ -24,6 +24,13 @@
     }
   }
 
+  $effect(() => {
+    // Load rooms immediately when the lobby page first mounts
+    if (rooms.length === 0 && !loading) {
+      loadRooms();
+    }
+  });
+
   async function createRoom() {
     try {
       loading = true;
